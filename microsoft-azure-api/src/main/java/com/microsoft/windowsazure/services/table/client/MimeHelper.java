@@ -195,7 +195,7 @@ class MimeHelper {
 
         for (int m = 0; m < 2; m++) {
             final String tempString = reader.readLine();
-            if (tempString == null || tempString.length() == 0) {
+            if (tempString.length() == 0) {
                 break;
             }
 

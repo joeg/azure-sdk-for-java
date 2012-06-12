@@ -341,7 +341,7 @@ public class TableBatchOperationTests extends TableTestBase {
 
         String propName = "";
         for (int m = 0; m < 255; m++) {
-            propName = propName.concat(Integer.toString(m % 9));
+            propName.concat(Integer.toString(m % 9));
         }
 
         bigEnt.getProperties().put(propName, new EntityProperty("test"));
