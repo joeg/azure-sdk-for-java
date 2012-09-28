@@ -19,6 +19,7 @@ import static org.junit.Assert.*;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -40,10 +41,9 @@ import com.microsoft.windowsazure.services.table.models.Filter;
 import com.microsoft.windowsazure.services.table.models.GetEntityResult;
 import com.microsoft.windowsazure.services.table.models.GetTableResult;
 import com.microsoft.windowsazure.services.table.models.InsertEntityResult;
-import com.microsoft.windowsazure.services.table.models.ListTablesOptions;
-import com.microsoft.windowsazure.services.table.models.Query;
 import com.microsoft.windowsazure.services.table.models.QueryEntitiesOptions;
 import com.microsoft.windowsazure.services.table.models.QueryEntitiesResult;
+import com.microsoft.windowsazure.services.table.models.QueryTablesOptions;
 import com.microsoft.windowsazure.services.table.models.QueryTablesResult;
 import com.microsoft.windowsazure.services.table.models.ServiceProperties;
 import com.microsoft.windowsazure.services.table.models.TableEntry;
@@ -117,7 +117,7 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
         // Retry creating every table as long as we get "409 - Table being deleted" error
         service = service.withFilter(new RetryPolicyFilter(new ExponentialRetryPolicy(new int[] { 409 })));
 
-        Set<String> containers = listTables(service, prefix);
+        Set<String> containers = queryTables(service, prefix);
         for (String item : list) {
             if (!containers.contains(item)) {
                 service.createTable(item);
@@ -126,7 +126,7 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
     }
 
     private static void deleteTables(TableContract service, String prefix, String[] list) throws Exception {
-        Set<String> containers = listTables(service, prefix);
+        Set<String> containers = queryTables(service, prefix);
         for (String item : list) {
             if (containers.contains(item)) {
                 service.deleteTable(item);
@@ -145,9 +145,9 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
         }
     }
 
-    private static Set<String> listTables(TableContract service, String prefix) throws Exception {
+    private static Set<String> queryTables(TableContract service, String prefix) throws Exception {
         HashSet<String> result = new HashSet<String>();
-        QueryTablesResult list = service.listTables(new ListTablesOptions().setPrefix(prefix));
+        QueryTablesResult list = service.queryTables(new QueryTablesOptions().setPrefix(prefix));
         for (TableEntry item : list.getTables()) {
             result.add(item.getName());
         }
@@ -268,26 +268,13 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
     }
 
     @Test
-    public void listTablesWorks() throws Exception {
-        // Arrange
-        Configuration config = createConfiguration();
-        TableContract service = TableService.create(config);
-
-        // Act
-        QueryTablesResult result = service.listTables();
-
-        // Assert
-        assertNotNull(result);
-    }
-
-    @Test
     public void queryTablesWithPrefixWorks() throws Exception {
         // Arrange
         Configuration config = createConfiguration();
         TableContract service = TableService.create(config);
 
         // Act
-        QueryTablesResult result = service.listTables(new ListTablesOptions().setPrefix(testTablesPrefix));
+        QueryTablesResult result = service.queryTables(new QueryTablesOptions().setPrefix(testTablesPrefix));
 
         // Assert
         assertNotNull(result);
@@ -313,10 +300,13 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
         // Arrange
         Configuration config = createConfiguration();
         TableContract service = TableService.create(config);
+        byte[] binaryData = new byte[] { 1, 2, 3, 4 };
+        UUID uuid = UUID.randomUUID();
         Entity entity = new Entity().setPartitionKey("001").setRowKey("insertEntityWorks")
                 .setProperty("test", EdmType.BOOLEAN, true).setProperty("test2", EdmType.STRING, "value")
                 .setProperty("test3", EdmType.INT32, 3).setProperty("test4", EdmType.INT64, 12345678901L)
-                .setProperty("test5", EdmType.DATETIME, new Date());
+                .setProperty("test5", EdmType.DATETIME, new Date()).setProperty("test6", EdmType.BINARY, binaryData)
+                .setProperty("test7", EdmType.GUID, uuid);
 
         // Act
         InsertEntityResult result = service.insertEntity(TEST_TABLE_2, entity);
@@ -344,6 +334,72 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
 
         assertNotNull(result.getEntity().getProperty("test5"));
         assertTrue(result.getEntity().getProperty("test5").getValue() instanceof Date);
+
+        assertNotNull(result.getEntity().getProperty("test6"));
+        assertTrue(result.getEntity().getProperty("test6").getValue() instanceof byte[]);
+        byte[] returnedBinaryData = (byte[]) result.getEntity().getProperty("test6").getValue();
+        assertEquals(binaryData.length, returnedBinaryData.length);
+        for (int i = 0; i < binaryData.length; i++) {
+            assertEquals(binaryData[i], returnedBinaryData[i]);
+        }
+
+        assertNotNull(result.getEntity().getProperty("test7"));
+        assertTrue(result.getEntity().getProperty("test7").getValue() instanceof UUID);
+        assertEquals(uuid.toString(), result.getEntity().getProperty("test7").getValue().toString());
+    }
+
+    @Test
+    public void insertEntityEscapeCharactersWorks() throws Exception {
+        // Arrange
+        Configuration config = createConfiguration();
+        TableContract service = TableService.create(config);
+
+        Entity entity = new Entity().setPartitionKey("001").setRowKey("insertEntityEscapeCharactersWorks")
+                .setProperty("test", EdmType.STRING, "\u0005").setProperty("test2", EdmType.STRING, "\u0011")
+                .setProperty("test3", EdmType.STRING, "\u0025").setProperty("test4", EdmType.STRING, "\uaaaa")
+                .setProperty("test5", EdmType.STRING, "\ub2e2").setProperty("test6", EdmType.STRING, " \ub2e2")
+                .setProperty("test7", EdmType.STRING, "ok \ub2e2");
+
+        // Act
+        InsertEntityResult result = service.insertEntity(TEST_TABLE_2, entity);
+
+        // Assert
+        assertNotNull(result);
+        assertNotNull(result.getEntity());
+
+        assertEquals("001", result.getEntity().getPartitionKey());
+        assertEquals("insertEntityEscapeCharactersWorks", result.getEntity().getRowKey());
+        assertNotNull(result.getEntity().getTimestamp());
+        assertNotNull(result.getEntity().getEtag());
+
+        assertNotNull(result.getEntity().getProperty("test"));
+        String actualTest1 = (String) result.getEntity().getProperty("test").getValue();
+        assertEquals("&#x5;", actualTest1);
+
+        assertNotNull(result.getEntity().getProperty("test2"));
+        String actualTest2 = (String) result.getEntity().getProperty("test2").getValue();
+        assertEquals("&#x11;", actualTest2);
+
+        assertNotNull(result.getEntity().getProperty("test3"));
+        String actualTest3 = (String) result.getEntity().getProperty("test3").getValue();
+        assertEquals("%", actualTest3);
+
+        assertNotNull(result.getEntity().getProperty("test4"));
+        String actualTest4 = (String) result.getEntity().getProperty("test4").getValue();
+        assertEquals("&#xaaaa;", actualTest4);
+
+        assertNotNull(result.getEntity().getProperty("test5"));
+        String actualTest5 = (String) result.getEntity().getProperty("test5").getValue();
+        assertEquals("&#xb2e2;", actualTest5);
+
+        assertNotNull(result.getEntity().getProperty("test6"));
+        String actualTest6 = (String) result.getEntity().getProperty("test6").getValue();
+        assertEquals(" &#xb2e2;", actualTest6);
+
+        assertNotNull(result.getEntity().getProperty("test7"));
+        String actualTest7 = (String) result.getEntity().getProperty("test7").getValue();
+        assertEquals("ok &#xb2e2;", actualTest7);
+
     }
 
     @Test
@@ -451,6 +507,53 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
     }
 
     @Test
+    public void deleteEntityTroublesomeKeyWorks() throws Exception {
+        System.out.println("deleteEntityTroublesomeKeyWorks()");
+
+        // Arrange
+        Configuration config = createConfiguration();
+        TableContract service = TableService.create(config);
+        Entity entity1 = new Entity().setPartitionKey("001").setRowKey("key with spaces");
+        Entity entity2 = new Entity().setPartitionKey("001").setRowKey("key'with'quotes");
+        Entity entity3 = new Entity().setPartitionKey("001").setRowKey("keyWithUnicode \uB2E4");
+        Entity entity4 = new Entity().setPartitionKey("001").setRowKey("key 'with'' \uB2E4");
+
+        // Act
+        InsertEntityResult result1 = service.insertEntity(TEST_TABLE_2, entity1);
+        InsertEntityResult result2 = service.insertEntity(TEST_TABLE_2, entity2);
+        InsertEntityResult result3 = service.insertEntity(TEST_TABLE_2, entity3);
+        InsertEntityResult result4 = service.insertEntity(TEST_TABLE_2, entity4);
+
+        service.deleteEntity(TEST_TABLE_2, result1.getEntity().getPartitionKey(), result1.getEntity().getRowKey());
+        service.deleteEntity(TEST_TABLE_2, result2.getEntity().getPartitionKey(), result2.getEntity().getRowKey());
+        service.deleteEntity(TEST_TABLE_2, result3.getEntity().getPartitionKey(), result3.getEntity().getRowKey());
+        service.deleteEntity(TEST_TABLE_2, result4.getEntity().getPartitionKey(), result4.getEntity().getRowKey());
+
+        // Assert
+        try {
+            service.getEntity(TEST_TABLE_2, result1.getEntity().getPartitionKey(), result1.getEntity().getRowKey());
+            assertFalse("Expect an exception when getting an entity that does not exist", true);
+        }
+        catch (ServiceException e) {
+            assertEquals("expect getHttpStatusCode", 404, e.getHttpStatusCode());
+
+        }
+
+        QueryEntitiesResult assertResult2 = service.queryEntities(
+                TEST_TABLE_2,
+                new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("RowKey"),
+                        Filter.constant("key'with'quotes"))));
+
+        assertEquals(0, assertResult2.getEntities().size());
+
+        QueryEntitiesResult assertResult3 = service.queryEntities(TEST_TABLE_2);
+        for (Entity entity : assertResult3.getEntities()) {
+            assertFalse("Entity3 should be removed from the table", entity3.getRowKey().equals(entity.getRowKey()));
+            assertFalse("Entity4 should be removed from the table", entity4.getRowKey().equals(entity.getRowKey()));
+        }
+    }
+
+    @Test
     public void deleteEntityWithETagWorks() throws Exception {
         System.out.println("deleteEntityWithETagWorks()");
 
@@ -478,10 +581,11 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
         // Arrange
         Configuration config = createConfiguration();
         TableContract service = TableService.create(config);
+        byte[] binaryData = new byte[] { 1, 2, 3, 4 };
         Entity entity = new Entity().setPartitionKey("001").setRowKey("getEntityWorks")
                 .setProperty("test", EdmType.BOOLEAN, true).setProperty("test2", EdmType.STRING, "value")
                 .setProperty("test3", EdmType.INT32, 3).setProperty("test4", EdmType.INT64, 12345678901L)
-                .setProperty("test5", EdmType.DATETIME, new Date());
+                .setProperty("test5", EdmType.DATETIME, new Date()).setProperty("test6", EdmType.BINARY, binaryData);
 
         // Act
         InsertEntityResult insertResult = service.insertEntity(TEST_TABLE_2, entity);
@@ -511,6 +615,14 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
 
         assertNotNull(result.getEntity().getProperty("test5"));
         assertTrue(result.getEntity().getProperty("test5").getValue() instanceof Date);
+
+        assertNotNull(result.getEntity().getProperty("test6"));
+        assertTrue(result.getEntity().getProperty("test6").getValue() instanceof byte[]);
+        byte[] returnedBinaryData = (byte[]) result.getEntity().getProperty("test6").getValue();
+        assertEquals(binaryData.length, returnedBinaryData.length);
+        for (int i = 0; i < binaryData.length; i++) {
+            assertEquals(binaryData[i], returnedBinaryData[i]);
+        }
     }
 
     @Test
@@ -605,20 +717,24 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
         TableContract service = TableService.create(config);
         String table = TEST_TABLE_5;
         int numberOfEntries = 5;
+        Entity[] entities = new Entity[numberOfEntries];
         for (int i = 0; i < numberOfEntries; i++) {
-            Entity entity = new Entity().setPartitionKey("001").setRowKey("queryEntitiesWithFilterWorks-" + i)
-                    .setProperty("test", EdmType.BOOLEAN, true).setProperty("test2", EdmType.STRING, "value")
-                    .setProperty("test3", EdmType.INT32, 3).setProperty("test4", EdmType.INT64, 12345678901L)
-                    .setProperty("test5", EdmType.DATETIME, new Date());
+            entities[i] = new Entity().setPartitionKey("001").setRowKey("queryEntitiesWithFilterWorks-" + i)
+                    .setProperty("test", EdmType.BOOLEAN, (i % 2 == 0))
+                    .setProperty("test2", EdmType.STRING, "'value'" + i).setProperty("test3", EdmType.INT32, i)
+                    .setProperty("test4", EdmType.INT64, 12345678901L + i)
+                    .setProperty("test5", EdmType.DATETIME, new Date(i * 1000))
+                    .setProperty("test6", EdmType.GUID, UUID.randomUUID());
 
-            service.insertEntity(table, entity);
+            service.insertEntity(table, entities[i]);
         }
 
         {
             // Act
-            QueryEntitiesResult result = service.queryEntities(table,
-                    new QueryEntitiesOptions().setQuery(new Query().setFilter(Filter.eq(Filter.litteral("RowKey"),
-                            Filter.constant("queryEntitiesWithFilterWorks-3")))));
+            QueryEntitiesResult result = service.queryEntities(
+                    table,
+                    new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("RowKey"),
+                            Filter.constant("queryEntitiesWithFilterWorks-3"))));
 
             // Assert
             assertNotNull(result);
@@ -628,8 +744,73 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
 
         {
             // Act
-            QueryEntitiesResult result = service.queryEntities(table, new QueryEntitiesOptions().setQuery(new Query()
-                    .setFilter(Filter.rawString("RowKey eq 'queryEntitiesWithFilterWorks-3'"))));
+            QueryEntitiesResult result = service.queryEntities(table, new QueryEntitiesOptions().setFilter(Filter
+                    .queryString("RowKey eq 'queryEntitiesWithFilterWorks-3'")));
+
+            // Assert
+            assertNotNull(result);
+            assertEquals(1, result.getEntities().size());
+            assertEquals("queryEntitiesWithFilterWorks-3", result.getEntities().get(0).getRowKey());
+        }
+
+        {
+            // Act
+            QueryEntitiesResult result = service
+                    .queryEntities(
+                            table,
+                            new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("test"),
+                                    Filter.constant(true))));
+
+            // Assert
+            assertNotNull(result);
+            assertEquals(3, result.getEntities().size());
+        }
+
+        {
+            // Act
+            QueryEntitiesResult result = service.queryEntities(
+                    table,
+                    new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("test2"),
+                            Filter.constant("'value'3"))));
+
+            // Assert
+            assertNotNull(result);
+            assertEquals(1, result.getEntities().size());
+            assertEquals("queryEntitiesWithFilterWorks-3", result.getEntities().get(0).getRowKey());
+        }
+
+        {
+            // Act
+            QueryEntitiesResult result = service.queryEntities(
+                    table,
+                    new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("test4"),
+                            Filter.constant(12345678903L))));
+
+            // Assert
+            assertNotNull(result);
+            assertEquals(1, result.getEntities().size());
+            assertEquals("queryEntitiesWithFilterWorks-2", result.getEntities().get(0).getRowKey());
+        }
+
+        {
+            // Act
+            QueryEntitiesResult result = service.queryEntities(
+                    table,
+                    new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("test5"),
+                            Filter.constant(new Date(3000)))));
+
+            // Assert
+            assertNotNull(result);
+            assertEquals(1, result.getEntities().size());
+            assertEquals("queryEntitiesWithFilterWorks-3", result.getEntities().get(0).getRowKey());
+        }
+
+        {
+            // Act
+            QueryEntitiesResult result = service.queryEntities(
+                    table,
+                    new QueryEntitiesOptions().setFilter(Filter.eq(Filter.propertyName("test6"),
+                            Filter.constant(entities[3].getPropertyValue("test6")))));
 
             // Assert
             assertNotNull(result);
@@ -909,5 +1090,53 @@ public class TableServiceIntegrationTest extends IntegrationTestBase {
         assertEquals(UpdateEntity.class, result.getEntries().get(3).getClass());
         assertEquals(UpdateEntity.class, result.getEntries().get(4).getClass());
         assertEquals(UpdateEntity.class, result.getEntries().get(5).getClass());
+    }
+
+    @Test
+    public void batchNegativeWorks() throws Exception {
+        System.out.println("batchNegativeWorks()");
+
+        // Arrange
+        Configuration config = createConfiguration();
+        TableContract service = TableService.create(config);
+        String table = TEST_TABLE_8;
+        String partitionKey = "001";
+
+        // Insert an entity the modify it outside of the batch
+        Entity entity1 = new Entity().setPartitionKey(partitionKey).setRowKey("batchNegativeWorks1")
+                .setProperty("test", EdmType.INT32, 1);
+        Entity entity2 = new Entity().setPartitionKey(partitionKey).setRowKey("batchNegativeWorks2")
+                .setProperty("test", EdmType.INT32, 2);
+        Entity entity3 = new Entity().setPartitionKey(partitionKey).setRowKey("batchNegativeWorks3")
+                .setProperty("test", EdmType.INT32, 3);
+
+        entity1 = service.insertEntity(table, entity1).getEntity();
+        entity2 = service.insertEntity(table, entity2).getEntity();
+        entity2.setProperty("test", EdmType.INT32, -2);
+        service.updateEntity(table, entity2);
+
+        // Act
+        BatchOperations batchOperations = new BatchOperations();
+
+        // The entity1 still has the original etag from the first submit, 
+        // so this update should fail, because another update was already made.
+        entity1.setProperty("test", EdmType.INT32, 3);
+        batchOperations.addDeleteEntity(table, entity1.getPartitionKey(), entity1.getRowKey(), entity1.getEtag());
+        batchOperations.addUpdateEntity(table, entity2);
+        batchOperations.addInsertEntity(table, entity3);
+
+        BatchResult result = service.batch(batchOperations);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(batchOperations.getOperations().size(), result.getEntries().size());
+        assertNull("First result should be null", result.getEntries().get(0));
+        assertNotNull("Second result should not be null", result.getEntries().get(1));
+        assertEquals("Second result type", com.microsoft.windowsazure.services.table.models.BatchResult.Error.class,
+                result.getEntries().get(1).getClass());
+        com.microsoft.windowsazure.services.table.models.BatchResult.Error error = (com.microsoft.windowsazure.services.table.models.BatchResult.Error) result
+                .getEntries().get(1);
+        assertEquals("Second result status code", 412, error.getError().getHttpStatusCode());
+        assertNull("Third result should be null", result.getEntries().get(2));
     }
 }

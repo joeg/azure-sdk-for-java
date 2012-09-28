@@ -27,9 +27,17 @@ import com.sun.jersey.api.client.WebResource;
 import com.sun.jersey.api.client.WebResource.Builder;
 
 public class PipelineHelpers {
-    public static void ThrowIfError(ClientResponse r) {
-        if (r.getStatus() >= 400) {
-            throw new UniformInterfaceException(r);
+    public static void ThrowIfNotSuccess(ClientResponse clientResponse) {
+        int statusCode = clientResponse.getStatus();
+
+        if ((statusCode < 200) || (statusCode >= 300)) {
+            throw new UniformInterfaceException(clientResponse);
+        }
+    }
+
+    public static void ThrowIfError(ClientResponse clientResponse) {
+        if (clientResponse.getStatus() >= 400) {
+            throw new UniformInterfaceException(clientResponse);
         }
     }
 
@@ -72,7 +80,7 @@ public class PipelineHelpers {
         return builder;
     }
 
-    public static Builder addOptionalAccessContitionHeader(Builder builder, AccessCondition accessCondition) {
+    public static Builder addOptionalAccessConditionHeader(Builder builder, AccessCondition accessCondition) {
         if (accessCondition != null) {
             if (accessCondition.getHeader() != AccessConditionHeaderType.NONE) {
                 builder = addOptionalHeader(builder, accessCondition.getHeader().toString(), accessCondition.getValue());
@@ -81,19 +89,23 @@ public class PipelineHelpers {
         return builder;
     }
 
-    public static Builder addOptionalSourceAccessContitionHeader(Builder builder, AccessCondition accessCondition) {
+    public static Builder addOptionalSourceAccessConditionHeader(Builder builder, AccessCondition accessCondition) {
         if (accessCondition != null) {
             if (accessCondition.getHeader() != AccessConditionHeaderType.NONE) {
                 String headerName;
                 switch (accessCondition.getHeader()) {
                     case IF_MATCH:
                         headerName = "x-ms-source-if-match";
+                        break;
                     case IF_UNMODIFIED_SINCE:
                         headerName = "x-ms-source-if-unmodified-since";
+                        break;
                     case IF_MODIFIED_SINCE:
                         headerName = "x-ms-source-if-modified-since";
+                        break;
                     case IF_NONE_MATCH:
                         headerName = "x-ms-source-if-none-match";
+                        break;
                     default:
                         headerName = "";
                 }

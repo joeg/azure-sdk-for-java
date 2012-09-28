@@ -1,5 +1,5 @@
 /**
- * Copyright 2011 Microsoft Corporation
+ * Copyright 2012 Microsoft Corporation
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,6 @@ import com.microsoft.windowsazure.services.table.models.GetEntityResult;
 import com.microsoft.windowsazure.services.table.models.GetServicePropertiesResult;
 import com.microsoft.windowsazure.services.table.models.GetTableResult;
 import com.microsoft.windowsazure.services.table.models.InsertEntityResult;
-import com.microsoft.windowsazure.services.table.models.ListTablesOptions;
 import com.microsoft.windowsazure.services.table.models.QueryEntitiesOptions;
 import com.microsoft.windowsazure.services.table.models.QueryEntitiesResult;
 import com.microsoft.windowsazure.services.table.models.QueryTablesOptions;
@@ -213,32 +212,6 @@ public class TableExceptionProcessor implements TableContract {
     public QueryTablesResult queryTables(QueryTablesOptions options) throws ServiceException {
         try {
             return service.queryTables(options);
-        }
-        catch (UniformInterfaceException e) {
-            throw processCatch(new ServiceException(e));
-        }
-        catch (ClientHandlerException e) {
-            throw processCatch(new ServiceException(e));
-        }
-    }
-
-    @Override
-    public QueryTablesResult listTables() throws ServiceException {
-        try {
-            return service.listTables();
-        }
-        catch (UniformInterfaceException e) {
-            throw processCatch(new ServiceException(e));
-        }
-        catch (ClientHandlerException e) {
-            throw processCatch(new ServiceException(e));
-        }
-    }
-
-    @Override
-    public QueryTablesResult listTables(ListTablesOptions options) throws ServiceException {
-        try {
-            return service.listTables(options);
         }
         catch (UniformInterfaceException e) {
             throw processCatch(new ServiceException(e));

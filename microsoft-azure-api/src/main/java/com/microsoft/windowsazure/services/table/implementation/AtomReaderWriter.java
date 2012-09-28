@@ -1,3 +1,17 @@
+/**
+ * Copyright 2012 Microsoft Corporation
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.microsoft.windowsazure.services.table.implementation;
 
 import java.io.ByteArrayInputStream;
@@ -63,8 +77,16 @@ public class AtomReaderWriter {
                     }
 
                     String value = edmValueConverter.serialize(edmType, entry.getValue().getValue());
+
+                    if ((edmType != null) && (edmType == "Edm.String")) {
+                        value = encodeNumericCharacterReference(value);
+                    }
+
                     if (value != null) {
                         writer.writeCharacters(value);
+                    }
+                    else {
+                        writer.writeAttribute("m:null", "true");
                     }
 
                     writer.writeEndElement(); // property name
@@ -262,12 +284,18 @@ public class AtomReaderWriter {
             String edmType = xmlr.getAttributeValue(null, "type");
 
             xmlr.next();
-            String serializedValue = xmlr.getText();
+
+            // Use concatenation instead of StringBuilder as most text is just one element.
+            String serializedValue = "";
+            while (!xmlr.isEndElement()) {
+                serializedValue += xmlr.getText();
+                xmlr.next();
+            }
+
             Object value = edmValueConverter.deserialize(edmType, serializedValue);
 
             result.put(name, new Property().setEdmType(edmType).setValue(value));
 
-            nextSignificant(xmlr);
             expect(xmlr, XMLStreamConstants.END_ELEMENT, name);
         }
 
@@ -303,5 +331,22 @@ public class AtomReaderWriter {
     private void expect(XMLStreamReader xmlr, int eventType, String localName) throws XMLStreamException {
         xmlr.require(eventType, null, localName);
         nextSignificant(xmlr);
+    }
+
+    private String encodeNumericCharacterReference(String value) {
+        if (value == null) {
+            return null;
+        }
+        else {
+            char[] charArray = value.toCharArray();
+            StringBuffer stringBuffer = new StringBuffer();
+            for (int index = 0; index < charArray.length; index++) {
+                if (charArray[index] < 0x20 || charArray[index] > 0x7f)
+                    stringBuffer.append("&#x").append(Integer.toHexString(charArray[index])).append(";");
+                else
+                    stringBuffer.append(charArray[index]);
+            }
+            return stringBuffer.toString();
+        }
     }
 }

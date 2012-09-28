@@ -1,5 +1,5 @@
 /**
- * Copyright 2011 Microsoft Corporation
+ * Copyright 2012 Microsoft Corporation
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -77,7 +77,7 @@ public class SharedKeyFilter extends com.microsoft.windowsazure.services.blob.im
     private String getCanonicalizedResource(ClientRequest cr) {
         String result = "/" + this.getAccountName();
 
-        result += cr.getURI().getPath();
+        result += cr.getURI().getRawPath();
 
         List<QueryParam> queryParams = SharedKeyUtils.getQueryParams(cr.getURI().getQuery());
         for (QueryParam p : queryParams) {

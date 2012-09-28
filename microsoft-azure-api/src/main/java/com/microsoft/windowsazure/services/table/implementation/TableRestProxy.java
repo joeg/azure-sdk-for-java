@@ -1,5 +1,5 @@
 /**
- * Copyright 2011 Microsoft Corporation
+ * Copyright 2012 Microsoft Corporation
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,16 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.Enumeration;
+import java.util.Formatter;
 import java.util.List;
+import java.util.UUID;
 
 import javax.activation.DataSource;
 import javax.inject.Inject;
@@ -30,6 +35,9 @@ import javax.inject.Named;
 import javax.mail.Header;
 import javax.mail.internet.InternetHeaders;
 import javax.mail.internet.MimeMultipart;
+import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLStreamException;
+import javax.xml.stream.XMLStreamReader;
 
 import com.microsoft.windowsazure.services.blob.implementation.ISO8601DateConverter;
 import com.microsoft.windowsazure.services.blob.implementation.RFC1123DateConverter;
@@ -67,14 +75,12 @@ import com.microsoft.windowsazure.services.table.models.GetEntityResult;
 import com.microsoft.windowsazure.services.table.models.GetServicePropertiesResult;
 import com.microsoft.windowsazure.services.table.models.GetTableResult;
 import com.microsoft.windowsazure.services.table.models.InsertEntityResult;
-import com.microsoft.windowsazure.services.table.models.ListTablesOptions;
-import com.microsoft.windowsazure.services.table.models.LitteralFilter;
-import com.microsoft.windowsazure.services.table.models.Query;
+import com.microsoft.windowsazure.services.table.models.PropertyNameFilter;
 import com.microsoft.windowsazure.services.table.models.QueryEntitiesOptions;
 import com.microsoft.windowsazure.services.table.models.QueryEntitiesResult;
+import com.microsoft.windowsazure.services.table.models.QueryStringFilter;
 import com.microsoft.windowsazure.services.table.models.QueryTablesOptions;
 import com.microsoft.windowsazure.services.table.models.QueryTablesResult;
-import com.microsoft.windowsazure.services.table.models.RawStringFilter;
 import com.microsoft.windowsazure.services.table.models.ServiceProperties;
 import com.microsoft.windowsazure.services.table.models.TableServiceOptions;
 import com.microsoft.windowsazure.services.table.models.UnaryFilter;
@@ -84,6 +90,7 @@ import com.sun.jersey.api.client.UniformInterfaceException;
 import com.sun.jersey.api.client.WebResource;
 import com.sun.jersey.api.client.WebResource.Builder;
 import com.sun.jersey.core.header.InBoundHeaders;
+import com.sun.jersey.core.util.ReaderWriter;
 
 public class TableRestProxy implements TableContract {
     private static final String API_VERSION = "2011-08-18";
@@ -160,33 +167,46 @@ public class TableRestProxy implements TableContract {
     }
 
     private String getEntityPath(String table, String partitionKey, String rowKey) {
-        return table + "(" + "PartitionKey='" + partitionKey + "',RowKey='" + rowKey + "')";
+        return table + "(" + "PartitionKey='" + safeEncode(partitionKey) + "',RowKey='" + safeEncode(rowKey) + "')";
+    }
+
+    private String safeEncode(String input) {
+        String fixSingleQuotes = input.replace("'", "''");
+        try {
+            return URLEncoder.encode(fixSingleQuotes, "UTF-8").replace("+", "%20");
+        }
+        catch (UnsupportedEncodingException e) {
+            return fixSingleQuotes;
+        }
     }
 
     private WebResource addOptionalQueryParam(WebResource webResource, String key, Object value) {
         return PipelineHelpers.addOptionalQueryParam(webResource, key, value);
     }
 
-    private WebResource addOptionalQuery(WebResource webResource, Query query) {
-        if (query == null)
+    private WebResource addOptionalQueryEntitiesOptions(WebResource webResource,
+            QueryEntitiesOptions queryEntitiesOptions) {
+        if (queryEntitiesOptions == null)
             return webResource;
 
-        if (query.getSelectFields() != null && query.getSelectFields().size() > 0) {
+        if (queryEntitiesOptions.getSelectFields() != null && queryEntitiesOptions.getSelectFields().size() > 0) {
             webResource = addOptionalQueryParam(webResource, "$select",
-                    CommaStringBuilder.join(encodeODataURIValues(query.getSelectFields())));
+                    CommaStringBuilder.join(encodeODataURIValues(queryEntitiesOptions.getSelectFields())));
         }
 
-        if (query.getTop() != null) {
-            webResource = addOptionalQueryParam(webResource, "$top", encodeODataURIValue(query.getTop().toString()));
+        if (queryEntitiesOptions.getTop() != null) {
+            webResource = addOptionalQueryParam(webResource, "$top", encodeODataURIValue(queryEntitiesOptions.getTop()
+                    .toString()));
         }
 
-        if (query.getFilter() != null) {
-            webResource = addOptionalQueryParam(webResource, "$filter", buildFilterExpression(query.getFilter()));
+        if (queryEntitiesOptions.getFilter() != null) {
+            webResource = addOptionalQueryParam(webResource, "$filter",
+                    buildFilterExpression(queryEntitiesOptions.getFilter()));
         }
 
-        if (query.getOrderByFields() != null) {
+        if (queryEntitiesOptions.getOrderByFields() != null) {
             webResource = addOptionalQueryParam(webResource, "$orderby",
-                    CommaStringBuilder.join(encodeODataURIValues(query.getOrderByFields())));
+                    CommaStringBuilder.join(encodeODataURIValues(queryEntitiesOptions.getOrderByFields())));
         }
 
         return webResource;
@@ -202,13 +222,55 @@ public class TableRestProxy implements TableContract {
         if (filter == null)
             return;
 
-        if (filter instanceof LitteralFilter) {
-            sb.append(((LitteralFilter) filter).getLitteral());
+        if (filter instanceof PropertyNameFilter) {
+            sb.append(((PropertyNameFilter) filter).getPropertyName());
         }
         else if (filter instanceof ConstantFilter) {
-            sb.append("'");
-            sb.append(((ConstantFilter) filter).getValue());
-            sb.append("'");
+            Object value = ((ConstantFilter) filter).getValue();
+            if (value == null) {
+                sb.append("null");
+            }
+            else if (value.getClass() == Long.class) {
+                sb.append(value);
+                sb.append("L");
+            }
+            else if (value.getClass() == Date.class) {
+                ISO8601DateConverter dateConverter = new ISO8601DateConverter();
+                sb.append("datetime'");
+                sb.append(dateConverter.format((Date) value));
+                sb.append("'");
+            }
+            else if (value.getClass() == UUID.class) {
+                sb.append("(guid'");
+                sb.append(value);
+                sb.append("')");
+            }
+            else if (value.getClass() == String.class) {
+                sb.append("'");
+                sb.append(((String) value).replace("'", "''"));
+                sb.append("'");
+            }
+            else if (value.getClass() == byte[].class) {
+                sb.append("X'");
+                byte[] byteArray = (byte[]) value;
+                Formatter formatter = new Formatter(sb);
+                for (byte b : byteArray) {
+                    formatter.format("%02x", b);
+                }
+                sb.append("'");
+            }
+            else if (value.getClass() == Byte[].class) {
+                sb.append("X'");
+                Byte[] byteArray = (Byte[]) value;
+                Formatter formatter = new Formatter(sb);
+                for (Byte b : byteArray) {
+                    formatter.format("%02x", b);
+                }
+                sb.append("'");
+            }
+            else {
+                sb.append(value);
+            }
         }
         else if (filter instanceof UnaryFilter) {
             sb.append(((UnaryFilter) filter).getOperator());
@@ -225,8 +287,8 @@ public class TableRestProxy implements TableContract {
             buildFilterExpression(((BinaryFilter) filter).getRight(), sb);
             sb.append(")");
         }
-        else if (filter instanceof RawStringFilter) {
-            sb.append(((RawStringFilter) filter).getRawString());
+        else if (filter instanceof QueryStringFilter) {
+            sb.append(((QueryStringFilter) filter).getQueryString());
         }
     }
 
@@ -250,7 +312,6 @@ public class TableRestProxy implements TableContract {
 
     private WebResource getResource(TableServiceOptions options) {
         WebResource webResource = channel.resource(url).path("/");
-        webResource = addOptionalQueryParam(webResource, "timeout", options.getTimeout());
         for (ServiceFilter filter : filters) {
             webResource.addFilter(new ClientFilterAdapter(filter));
         }
@@ -283,6 +344,9 @@ public class TableRestProxy implements TableContract {
     @Override
     public void setServiceProperties(ServiceProperties serviceProperties, TableServiceOptions options)
             throws ServiceException {
+        if (serviceProperties == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path("/").queryParam("resType", "service")
                 .queryParam("comp", "properties");
 
@@ -298,6 +362,9 @@ public class TableRestProxy implements TableContract {
 
     @Override
     public GetTableResult getTable(String table, TableServiceOptions options) throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path("Tables" + "('" + table + "')");
 
         WebResource.Builder builder = webResource.getRequestBuilder();
@@ -312,32 +379,32 @@ public class TableRestProxy implements TableContract {
     }
 
     @Override
-    public QueryTablesResult listTables() throws ServiceException {
-        return listTables(new ListTablesOptions());
-    }
-
-    @Override
-    public QueryTablesResult listTables(ListTablesOptions options) throws ServiceException {
-        // Append Max char to end '{' is 1 + 'z' in AsciiTable ==> uppperBound is prefix + '{'
-        Filter filter = Filter.and(Filter.ge(Filter.litteral("TableName"), Filter.constant(options.getPrefix())),
-                Filter.le(Filter.litteral("TableName"), Filter.constant(options.getPrefix() + "{")));
-
-        QueryTablesOptions queryTableOptions = new QueryTablesOptions();
-        queryTableOptions.setTimeout(options.getTimeout());
-        queryTableOptions.setQuery(new Query().setFilter(filter));
-        return queryTables(queryTableOptions);
-    }
-
-    @Override
     public QueryTablesResult queryTables() throws ServiceException {
         return queryTables(new QueryTablesOptions());
     }
 
     @Override
     public QueryTablesResult queryTables(QueryTablesOptions options) throws ServiceException {
+        Filter queryFilter = options.getFilter();
+        String nextTableName = options.getNextTableName();
+        String prefix = options.getPrefix();
+
+        if (prefix != null) {
+            // Append Max char to end '{' is 1 + 'z' in AsciiTable ==> upperBound is prefix + '{'
+            Filter prefixFilter = Filter.and(Filter.ge(Filter.propertyName("TableName"), Filter.constant(prefix)),
+                    Filter.le(Filter.propertyName("TableName"), Filter.constant(prefix + "{")));
+
+            if (queryFilter == null) {
+                queryFilter = prefixFilter;
+            }
+            else {
+                queryFilter = Filter.and(queryFilter, prefixFilter);
+            }
+        }
+
         WebResource webResource = getResource(options).path("Tables");
-        webResource = addOptionalQuery(webResource, options.getQuery());
-        webResource = addOptionalQueryParam(webResource, "NextTableName", options.getNextTableName());
+        webResource = addOptionalQueryParam(webResource, "$filter", buildFilterExpression(queryFilter));
+        webResource = addOptionalQueryParam(webResource, "NextTableName", nextTableName);
 
         WebResource.Builder builder = webResource.getRequestBuilder();
         builder = addTableRequestHeaders(builder);
@@ -360,6 +427,9 @@ public class TableRestProxy implements TableContract {
 
     @Override
     public void createTable(String table, TableServiceOptions options) throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path("Tables");
 
         WebResource.Builder builder = webResource.getRequestBuilder();
@@ -378,6 +448,9 @@ public class TableRestProxy implements TableContract {
 
     @Override
     public void deleteTable(String table, TableServiceOptions options) throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path("Tables" + "('" + table + "')");
 
         WebResource.Builder builder = webResource.getRequestBuilder();
@@ -396,6 +469,9 @@ public class TableRestProxy implements TableContract {
     @Override
     public InsertEntityResult insertEntity(String table, Entity entity, TableServiceOptions options)
             throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path(table);
 
         WebResource.Builder builder = webResource.getRequestBuilder();
@@ -425,7 +501,7 @@ public class TableRestProxy implements TableContract {
 
     @Override
     public UpdateEntityResult mergeEntity(String table, Entity entity) throws ServiceException {
-        return updateEntity(table, entity, new TableServiceOptions());
+        return mergeEntity(table, entity, new TableServiceOptions());
     }
 
     @Override
@@ -447,7 +523,7 @@ public class TableRestProxy implements TableContract {
 
     @Override
     public UpdateEntityResult insertOrMergeEntity(String table, Entity entity) throws ServiceException {
-        return insertOrReplaceEntity(table, entity, new TableServiceOptions());
+        return insertOrMergeEntity(table, entity, new TableServiceOptions());
     }
 
     @Override
@@ -458,6 +534,9 @@ public class TableRestProxy implements TableContract {
 
     private UpdateEntityResult putOrMergeEntityCore(String table, Entity entity, String verb, boolean includeEtag,
             TableServiceOptions options) throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path(
                 getEntityPath(table, entity.getPartitionKey(), entity.getRowKey()));
 
@@ -465,6 +544,10 @@ public class TableRestProxy implements TableContract {
         builder = addTableRequestHeaders(builder);
         if (includeEtag) {
             builder = addIfMatchHeader(builder, entity.getEtag());
+        }
+        if (verb == "MERGE") {
+            builder = builder.header("X-HTTP-Method", "MERGE");
+            verb = "POST";
         }
 
         builder = builder.entity(atomReaderWriter.generateEntityEntry(entity), "application/atom+xml");
@@ -486,6 +569,9 @@ public class TableRestProxy implements TableContract {
     @Override
     public void deleteEntity(String table, String partitionKey, String rowKey, DeleteEntityOptions options)
             throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path(getEntityPath(table, partitionKey, rowKey));
 
         WebResource.Builder builder = webResource.getRequestBuilder();
@@ -504,6 +590,9 @@ public class TableRestProxy implements TableContract {
     @Override
     public GetEntityResult getEntity(String table, String partitionKey, String rowKey, TableServiceOptions options)
             throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
         WebResource webResource = getResource(options).path(getEntityPath(table, partitionKey, rowKey));
 
         WebResource.Builder builder = webResource.getRequestBuilder();
@@ -525,8 +614,14 @@ public class TableRestProxy implements TableContract {
 
     @Override
     public QueryEntitiesResult queryEntities(String table, QueryEntitiesOptions options) throws ServiceException {
+        if (table == null)
+            throw new NullPointerException();
+
+        if (options == null)
+            options = new QueryEntitiesOptions();
+
         WebResource webResource = getResource(options).path(table);
-        webResource = addOptionalQuery(webResource, options.getQuery());
+        webResource = addOptionalQueryEntitiesOptions(webResource, options);
         webResource = addOptionalQueryParam(webResource, "NextPartitionKey",
                 encodeODataURIValue(options.getNextPartitionKey()));
         webResource = addOptionalQueryParam(webResource, "NextRowKey", encodeODataURIValue(options.getNextRowKey()));
@@ -564,7 +659,13 @@ public class TableRestProxy implements TableContract {
         ThrowIfError(response);
 
         BatchResult result = new BatchResult();
-        result.setEntries(parseBatchResponse(response, operations));
+
+        try {
+            result.setEntries(parseBatchResponse(response, operations));
+        }
+        catch (IOException e) {
+            throw new ServiceException(e);
+        }
 
         return result;
     }
@@ -683,18 +784,25 @@ public class TableRestProxy implements TableContract {
         return bodyPartContent;
     }
 
-    private List<Entry> parseBatchResponse(ClientResponse response, BatchOperations operations) {
+    private List<Entry> parseBatchResponse(ClientResponse response, BatchOperations operations) throws IOException {
+        // Default stream cannot be reset, but it is needed by multiple parts of this method.
+        // Replace the default response stream with one that can be read multiple times.
+        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+        InputStream inputStream = response.getEntityInputStream();
+        ReaderWriter.writeTo(inputStream, byteArrayOutputStream);
+        response.setEntityInputStream(new ByteArrayInputStream(byteArrayOutputStream.toByteArray()));
+
         List<DataSource> parts = mimeReaderWriter.parseParts(response.getEntityInputStream(), response.getHeaders()
                 .getFirst("Content-Type"));
 
-        if (parts.size() != operations.getOperations().size()) {
+        if (parts.size() == 0 || parts.size() > operations.getOperations().size()) {
             throw new UniformInterfaceException(String.format(
                     "Batch response from server does not contain the correct amount "
                             + "of parts (expecting %d, received %d instead)", parts.size(), operations.getOperations()
                             .size()), response);
         }
 
-        List<Entry> result = new ArrayList<Entry>();
+        Entry[] entries = new Entry[operations.getOperations().size()];
         for (int i = 0; i < parts.size(); i++) {
             DataSource ds = parts.get(i);
             Operation operation = operations.getOperations().get(i);
@@ -702,11 +810,15 @@ public class TableRestProxy implements TableContract {
             StatusLine status = httpReaderWriter.parseStatusLine(ds);
             InternetHeaders headers = httpReaderWriter.parseHeaders(ds);
             InputStream content = httpReaderWriter.parseEntity(ds);
+            ByteArrayOutputStream contentByteArrayOutputStream = new ByteArrayOutputStream();
+            ReaderWriter.writeTo(content, contentByteArrayOutputStream);
+            content = new ByteArrayInputStream(contentByteArrayOutputStream.toByteArray());
 
             if (status.getStatus() >= 400) {
                 // Create dummy client response with status, headers and content
                 InBoundHeaders inBoundHeaders = new InBoundHeaders();
 
+                @SuppressWarnings("unchecked")
                 Enumeration<Header> e = headers.getAllHeaders();
                 while (e.hasMoreElements()) {
                     Header header = e.nextElement();
@@ -721,22 +833,51 @@ public class TableRestProxy implements TableContract {
                 serviceException = ServiceExceptionFactory.process("table", serviceException);
                 Error error = new Error().setError(serviceException);
 
-                result.add(error);
+                // Parse the message to find which operation caused this error.
+                try {
+                    XMLInputFactory xmlStreamFactory = XMLInputFactory.newFactory();
+                    content.reset();
+                    XMLStreamReader xmlStreamReader = xmlStreamFactory.createXMLStreamReader(content);
+
+                    while (xmlStreamReader.hasNext()) {
+                        xmlStreamReader.next();
+                        if (xmlStreamReader.isStartElement() && "message".equals(xmlStreamReader.getLocalName())) {
+                            xmlStreamReader.next();
+                            // Process "message" elements only
+                            String message = xmlStreamReader.getText();
+                            int colonIndex = message.indexOf(':');
+                            String errorOpId = message.substring(0, colonIndex);
+                            int opId = Integer.parseInt(errorOpId);
+                            entries[opId] = error;
+                            break;
+                        }
+                    }
+                    xmlStreamReader.close();
+                }
+                catch (XMLStreamException e1) {
+                    throw new UniformInterfaceException(
+                            "Batch response from server does not contain XML in the expected format", response);
+                }
             }
             else if (operation instanceof InsertEntityOperation) {
                 InsertEntity opResult = new InsertEntity().setEntity(atomReaderWriter.parseEntityEntry(content));
-                result.add(opResult);
+                entries[i] = opResult;
             }
             else if ((operation instanceof UpdateEntityOperation) || (operation instanceof MergeEntityOperation)
                     || (operation instanceof InsertOrReplaceEntityOperation)
                     || (operation instanceof InsertOrMergeEntityOperation)) {
                 UpdateEntity opResult = new UpdateEntity().setEtag(headers.getHeader("ETag", null));
-                result.add(opResult);
+                entries[i] = opResult;
             }
             else if (operation instanceof DeleteEntityOperation) {
                 DeleteEntity opResult = new DeleteEntity();
-                result.add(opResult);
+                entries[i] = opResult;
             }
+        }
+
+        List<Entry> result = new ArrayList<Entry>();
+        for (int i = 0; i < entries.length; i++) {
+            result.add(entries[i]);
         }
 
         return result;
